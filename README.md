@@ -117,10 +117,10 @@ This tests Now Playing detection without connecting to Discord.
 ## How It Works
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌──────────┐     ┌─────────────┐
-│  Telegram   │────▶│  macOS MediaRemote│────▶│  iTunes  │────▶│   Discord   │
-│  (playing)  │     │    (via JXA)      │     │   API    │     │Rich Presence│
-└─────────────┘     └──────────────────┘     └──────────┘     └─────────────┘
+┌─────────────┐     ┌────────────────────┐     ┌──────────┐     ┌───────────────┐
+│  Telegram   │────▶│  macOS MediaRemote │────▶│  iTunes  │────▶│   Discord     │
+│  (playing)  │     │    (via JXA)       │     │   API    │     │ Rich Presence │
+└─────────────┘     └────────────────────┘     └──────────┘     └───────────────┘
 ```
 
 1. **Telegram** plays audio and reports to macOS Media Remote
