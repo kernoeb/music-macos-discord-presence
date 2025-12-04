@@ -8,8 +8,9 @@
   "scripts": {
     "start": "bun run index.ts",
     "dev": "bun --watch index.ts",
-    "tray": "bun run tray.ts",
-    "build": "bun build --compile --minify tray.ts --outfile telegram-discord-presence",
+    "test": "bun run index.ts --test",
+    "tray": "bun run index.ts --tray",
+    "build": "bun build --compile --minify --define IS_COMPILED=true index.ts --outfile telegram-discord-presence",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

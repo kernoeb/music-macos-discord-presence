@@ -2,29 +2,38 @@ import { Client } from "@xhayper/discord-rpc";
 import { ActivityType } from "discord-api-types/v10";
 import { $ } from "bun";
 
-// Check for test mode
+// Set to true at compile time via --define
+declare const IS_COMPILED: boolean | undefined;
+
+// CLI arguments
 const TEST_MODE = process.argv.includes("--test");
+const TRAY_MODE = process.argv.includes("--tray") || (typeof IS_COMPILED !== "undefined" && IS_COMPILED);
 
-// Artwork cache to avoid repeated API calls
-const artworkCache = new Map<string, string | null>();
-
-// Track start time cache (since Telegram doesn't provide elapsedTime)
-let currentTrackId: string | null = null;
-let currentTrackStartTime: number | null = null;
-
-// Discord Application Client ID - You need to create an app at https://discord.com/developers/applications
-// Set this in your environment or replace with your actual client ID
+// Discord Application Client ID
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "YOUR_CLIENT_ID_HERE";
 
 // Telegram bundle identifiers (macOS)
 const TELEGRAM_BUNDLE_IDS = [
-  "ru.keepcoder.Telegram", // Telegram for macOS (native)
-  "org.telegram.desktop", // Telegram Desktop
-  "com.tdesktop.Telegram", // Alternative Telegram Desktop
+  "ru.keepcoder.Telegram",
+  "org.telegram.desktop",
+  "com.tdesktop.Telegram",
 ];
 
 // Polling interval in milliseconds
 const POLL_INTERVAL = 5000;
+
+// Artwork cache to avoid repeated API calls
+const artworkCache = new Map<string, string | null>();
+
+// Track state
+let currentTrackId: string | null = null;
+let currentTrackStartTime: number | null = null;
+let lastTrack: string | null = null;
+let isPaused = false;
+let isConnected = false;
+
+// Music note icon for tray (44x44 PNG @ 144 DPI for Retina menu bar)
+const TRAY_ICON = "iVBORw0KGgoAAAANSUhEUgAAACwAAAAsCAYAAAAehFoBAAAAAXNSR0IArs4c6QAAAHhlWElmTU0AKgAAAAgABAEaAAUAAAABAAAAPgEbAAUAAAABAAAARgEoAAMAAAABAAIAAIdpAAQAAAABAAAATgAAAAAAAACQAAAAAQAAAJAAAAABAAOgAQADAAAAAQABAACgAgAEAAAAAQAAACygAwAEAAAAAQAAACwAAAAALuNfAgAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAASVJREFUWAnt1uEKgzAMBGAde/9X3jwkEEosF63mCvbHWrXq1zODLsvb3gTmTmC9g//bWvTcdWvR+cy5T2by1blHC8k89/KKo5cxsLNpP5qwXxyzKD/fxmUJGwB9Ju2yhD04k7YEGHgWLVESPm2MeyUik7BH99KWTNjj27QlE/bgNm15sMdjLA+eriSmS7gU3H7eFtMeR/Mfr2Eg0Foce/w42GA7Ow8vA3u4jZm+HAxklPZR2UiALdkIbteslwIb6ihdXJcEGzzqpwN/o1Uw59pdFHPPiDlpcBXUFpsqiWos0DRYAUuDVbAUWAlLgTFJqdE1rIJ+wXd/CWrnP+KP19vQZBZJgfHAK+hRWDho8Fn0SGwanEWPxp4C4ya0XoncAd3fOuHvH08dWFF9sJxuAAAAAElFTkSuQmCC";
 
 interface NowPlayingInfo {
   title: string | null;
@@ -32,7 +41,7 @@ interface NowPlayingInfo {
   album: string | null;
   duration: number | null;
   elapsedTime: number | null;
-  timestamp: number | null; // Unix timestamp (ms) when elapsedTime was recorded
+  timestamp: number | null;
   playbackRate: number | null;
   bundleIdentifier: string | null;
   isPlaying: boolean;
@@ -47,6 +56,20 @@ interface iTunesSearchResult {
     trackName?: string;
     artistName?: string;
     collectionName?: string;
+  }>;
+}
+
+interface DeezerSearchResult {
+  data: Array<{
+    title?: string;
+    artist?: { name?: string };
+    album?: {
+      cover_xl?: string;
+      cover_big?: string;
+      cover_medium?: string;
+      cover_small?: string;
+      title?: string;
+    };
   }>;
 }
 
@@ -69,7 +92,6 @@ interface JXAResult {
 }
 
 // JXA Script to get Now Playing info on macOS 15.4+
-// This bypasses the MediaRemote entitlement check
 const JXA_SCRIPT = `
 ObjC.import("Foundation");
 
@@ -86,7 +108,6 @@ function run() {
       return JSON.stringify({ error: "MRNowPlayingRequest not available", isPlaying: false, client: null, info: {} });
     }
 
-    // Get client info (which app is playing)
     const playerPath = MRNowPlayingRequest.localNowPlayingPlayerPath;
     let clientConverted = null;
 
@@ -103,7 +124,6 @@ function run() {
       };
     }
 
-    // Get now playing info (track metadata)
     const nowPlayingItem = MRNowPlayingRequest.localNowPlayingItem;
     let infoConverted = {};
 
@@ -128,7 +148,6 @@ function run() {
       }
     }
 
-    // Get playing state
     const isPlaying = MRNowPlayingRequest.localIsPlaying;
 
     return JSON.stringify({
@@ -144,7 +163,6 @@ function run() {
 
 async function getNowPlayingInfo(): Promise<NowPlayingInfo> {
   try {
-    // Use JXA to get Now Playing info (works on macOS 15.4+)
     const result = await $`osascript -l JavaScript -e ${JXA_SCRIPT}`.text();
     const parsed: JXAResult = JSON.parse(result.trim());
 
@@ -163,7 +181,6 @@ async function getNowPlayingInfo(): Promise<NowPlayingInfo> {
       };
     }
 
-    // Get bundle identifier from client or parent app
     const bundleId =
       parsed.client?.parentApplicationBundleIdentifier ||
       parsed.client?.bundleIdentifier ||
@@ -203,38 +220,154 @@ function isTelegramPlaying(info: NowPlayingInfo): boolean {
   );
 }
 
+function normalizeSearchTerm(term: string): string {
+  return term
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // Remove diacritics (é -> e, etc.)
+    .replace(/[!?.,;:'"()[\]{}]/g, "") // Remove punctuation
+    .replace(/\s+/g, " ") // Collapse multiple spaces
+    .trim();
+}
+
+function getFirstArtist(artist: string): string {
+  // Handle "Artist1, Artist2" or "Artist1 & Artist2" or "Artist1 feat. Artist2"
+  const separators = [",", " & ", " feat.", " ft.", " featuring ", " x "];
+  let result = artist;
+  for (const sep of separators) {
+    const idx = result.toLowerCase().indexOf(sep.toLowerCase());
+    if (idx > 0) {
+      result = result.substring(0, idx);
+    }
+  }
+  return result.trim();
+}
+
+function matchesResult(
+  result: { trackName?: string; artistName?: string },
+  expectedTitle: string,
+  expectedArtist: string | null
+): boolean {
+  const resultTrack = normalizeSearchTerm(result.trackName || "").toLowerCase();
+  const resultArtist = normalizeSearchTerm(result.artistName || "").toLowerCase();
+  const title = expectedTitle.toLowerCase();
+  const artist = expectedArtist?.toLowerCase() || "";
+
+  // Check if artist matches (result artist contains our artist OR our artist contains result artist)
+  const artistMatches = !expectedArtist ||
+    resultArtist.includes(artist) ||
+    artist.includes(resultArtist) ||
+    resultArtist.split(/\s+/).some(word => word.length > 2 && artist.includes(word));
+
+  // Check if title has any overlap (at least one significant word matches)
+  const titleWords = title.split(/\s+/).filter(w => w.length > 2);
+  const resultWords = resultTrack.split(/\s+/).filter(w => w.length > 2);
+  const titleMatches = titleWords.some(word => resultWords.includes(word)) ||
+    resultWords.some(word => titleWords.includes(word));
+
+  return artistMatches && (titleMatches || resultTrack.includes(title) || title.includes(resultTrack));
+}
+
+async function searchItunes(
+  searchTerm: string,
+  expectedTitle: string,
+  expectedArtist: string | null
+): Promise<string | null> {
+  const encodedTerm = encodeURIComponent(searchTerm);
+  const url = `https://itunes.apple.com/search?term=${encodedTerm}&media=music&entity=song&limit=10`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    return null;
+  }
+
+  const data = (await response.json()) as iTunesSearchResult;
+
+  // Find first result that actually matches our title/artist
+  for (const result of data.results) {
+    if (result.artworkUrl100 && matchesResult(result, expectedTitle, expectedArtist)) {
+      return result.artworkUrl100.replace("100x100", "512x512");
+    }
+  }
+  return null;
+}
+
+async function searchDeezer(
+  searchTerm: string,
+  expectedTitle: string,
+  expectedArtist: string | null
+): Promise<string | null> {
+  const url = `https://api.deezer.com/search?q=${encodeURIComponent(searchTerm)}&limit=10`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    return null;
+  }
+
+  const data = (await response.json()) as DeezerSearchResult;
+  if (!data.data) return null;
+
+  for (const track of data.data) {
+    if (matchesResult({
+      trackName: track.title,
+      artistName: track.artist?.name,
+    }, expectedTitle, expectedArtist)) {
+      const artwork =
+        track.album?.cover_xl ||
+        track.album?.cover_big ||
+        track.album?.cover_medium ||
+        track.album?.cover_small;
+
+      if (artwork) return artwork;
+    }
+  }
+
+  return null;
+}
+
 async function fetchArtworkUrl(title: string, artist: string | null): Promise<string | null> {
   const cacheKey = `${title}-${artist || ""}`;
 
-  // Check cache first
   if (artworkCache.has(cacheKey)) {
     return artworkCache.get(cacheKey) || null;
   }
 
   try {
-    // Build search query
-    const searchTerm = artist ? `${title} ${artist}` : title;
-    const encodedTerm = encodeURIComponent(searchTerm);
-    const url = `https://itunes.apple.com/search?term=${encodedTerm}&media=music&entity=song&limit=5`;
+    const normalizedTitle = normalizeSearchTerm(title);
+    const normalizedArtist = artist ? normalizeSearchTerm(artist) : null;
+    const firstArtistRaw = artist ? getFirstArtist(artist).trim() : null;
+    const firstArtist = firstArtistRaw ? normalizeSearchTerm(firstArtistRaw) : null;
+    const expectedArtist = firstArtist || normalizedArtist;
 
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.error("iTunes API error:", response.status);
-      artworkCache.set(cacheKey, null);
-      return null;
+    // Try a mix of raw and normalized search terms to handle stylized titles
+    const searchStrategies: string[] = [];
+
+    // Raw text (keeps punctuation like ! or ? that some APIs use for exact match)
+    if (artist) searchStrategies.push(`${title.trim()} ${artist.trim()}`);
+    searchStrategies.push(title.trim());
+
+    // Normalized variants
+    if (normalizedArtist) searchStrategies.push(`${normalizedTitle} ${normalizedArtist}`);
+    if (firstArtist && firstArtist !== normalizedArtist) searchStrategies.push(`${normalizedTitle} ${firstArtist}`);
+    searchStrategies.push(normalizedTitle);
+    if (firstArtist) searchStrategies.push(firstArtist);
+
+    for (const searchTerm of searchStrategies) {
+      // Prefer Deezer (better coverage for niche/indie tracks), then fall back to iTunes
+      const deezerArtwork = await searchDeezer(searchTerm, normalizedTitle, expectedArtist);
+      if (deezerArtwork) {
+        artworkCache.set(cacheKey, deezerArtwork);
+        console.log(`🎨 Found artwork via Deezer for "${title}"`);
+        return deezerArtwork;
+      }
+
+      const itunesArtwork = await searchItunes(searchTerm, normalizedTitle, expectedArtist);
+      if (itunesArtwork) {
+        artworkCache.set(cacheKey, itunesArtwork);
+        console.log(`🎨 Found artwork via iTunes for "${title}"`);
+        return itunesArtwork;
+      }
     }
 
-    const data = (await response.json()) as iTunesSearchResult;
-
-    if (data.resultCount > 0 && data.results[0]?.artworkUrl100) {
-      // Get higher resolution artwork (replace 100x100 with 512x512)
-      const artworkUrl = data.results[0].artworkUrl100.replace("100x100", "512x512");
-      artworkCache.set(cacheKey, artworkUrl);
-      console.log(`🎨 Found artwork for "${title}"`);
-      return artworkUrl;
-    }
-
-    // No artwork found
     artworkCache.set(cacheKey, null);
     return null;
   } catch (error) {
@@ -303,10 +436,7 @@ async function testMode() {
     console.log("\n" + "=".repeat(50) + "\n");
   };
 
-  // Run once immediately
   await runTest();
-
-  // Then poll every 5 seconds
   console.log("Polling every 5 seconds... Press Ctrl+C to stop.\n");
   setInterval(runTest, POLL_INTERVAL);
 }
@@ -318,8 +448,9 @@ async function main() {
     return;
   }
 
-  console.log("🎵 Telegram Audio Discord Rich Presence");
-  console.log("========================================");
+  const modeLabel = TRAY_MODE ? "(Tray App)" : "";
+  console.log(`🎵 Telegram Audio Discord Rich Presence ${modeLabel}`);
+  console.log("=".repeat(44 + modeLabel.length));
 
   if (DISCORD_CLIENT_ID === "YOUR_CLIENT_ID_HERE") {
     console.error("\n⚠️  Please set your Discord Client ID!");
@@ -338,9 +469,6 @@ async function main() {
   // Initialize Discord RPC
   const rpc = new Client({ clientId: DISCORD_CLIENT_ID });
 
-  let isConnected = false;
-  let lastTrack: string | null = null;
-
   rpc.on("ready", () => {
     console.log(`✅ Connected to Discord as ${rpc.user?.username}`);
     isConnected = true;
@@ -351,67 +479,158 @@ async function main() {
     isConnected = false;
   });
 
+  // Systray instance (only used in tray mode)
+  let systray: InstanceType<typeof import("systray2").default> | null = null;
+
   // Connect to Discord
-  try {
-    await rpc.login();
-  } catch (error) {
-    console.error("Failed to connect to Discord:", error);
-    console.error("\nMake sure Discord is running on your computer.");
-    process.exit(1);
+  const connectToDiscord = async () => {
+    try {
+      console.log("🔌 Connecting to Discord...");
+      await rpc.login();
+    } catch (error) {
+      console.error("⚠️  Failed to connect to Discord:", error instanceof Error ? error.message : error);
+      if (TRAY_MODE) {
+        console.error("   Will retry in 30 seconds...");
+        setTimeout(connectToDiscord, 30000);
+      } else {
+        console.error("\nMake sure Discord is running on your computer.");
+        process.exit(1);
+      }
+    }
+  };
+
+  // Setup system tray if in tray mode
+  if (TRAY_MODE) {
+    const SysTray = require("systray2").default;
+    type ClickEvent = import("systray2").ClickEvent;
+
+    systray = new SysTray({
+      menu: {
+        icon: TRAY_ICON,
+        isTemplateIcon: true,
+        title: "",
+        tooltip: "Telegram Discord Presence",
+        items: [
+          {
+            title: "Telegram → Discord",
+            enabled: false,
+            tooltip: "Status",
+          },
+          SysTray.separator,
+          {
+            title: "⏸️ Pause",
+            enabled: true,
+            tooltip: "Pause/Resume presence updates",
+          },
+          SysTray.separator,
+          {
+            title: "🚪 Quit",
+            enabled: true,
+            tooltip: "Exit the application",
+          },
+        ],
+      },
+      debug: false,
+      copyDir: true,
+    });
+
+    systray!.onClick((action: ClickEvent) => {
+      const title = action.item.title;
+
+      if (title === "⏸️ Pause") {
+        isPaused = true;
+        systray!.sendAction({
+          type: "update-item",
+          item: { ...action.item, title: "▶️ Resume" },
+          seq_id: action.seq_id,
+        });
+        systray!.sendAction({
+          type: "update-menu",
+          menu: {
+            icon: TRAY_ICON,
+            title: "",
+            tooltip: "Telegram Discord Presence (Paused)",
+            items: [],
+          },
+        });
+        rpc.user?.clearActivity();
+        console.log("⏸️ Paused");
+      } else if (title === "▶️ Resume") {
+        isPaused = false;
+        systray!.sendAction({
+          type: "update-item",
+          item: { ...action.item, title: "⏸️ Pause" },
+          seq_id: action.seq_id,
+        });
+        systray!.sendAction({
+          type: "update-menu",
+          menu: {
+            icon: TRAY_ICON,
+            title: "",
+            tooltip: "Telegram Discord Presence",
+            items: [],
+          },
+        });
+        console.log("▶️ Resumed");
+      } else if (title === "🚪 Quit") {
+        console.log("👋 Quitting...");
+        rpc.user?.clearActivity();
+        rpc.destroy();
+        systray!.kill(false);
+        process.exit(0);
+      }
+    });
+
+    await systray!.ready();
+    console.log("🔔 System tray ready");
+
+    // Start connection attempt in background (non-blocking for tray)
+    connectToDiscord();
+  } else {
+    // CLI mode - connect and block
+    await connectToDiscord();
   }
 
-  console.log("\n🔍 Monitoring for Telegram audio playback...\n");
+  console.log("🔍 Monitoring for Telegram audio playback...\n");
 
-  // Main polling loop
+  // Main update loop
   async function updatePresence() {
-    if (!isConnected) return;
+    if (!isConnected || isPaused) return;
 
     const info = await getNowPlayingInfo();
 
-    // Check if Telegram is playing audio
     if (isTelegramPlaying(info) && info.title && info.isPlaying && info.playbackRate && info.playbackRate > 0) {
       const trackId = `${info.title}-${info.artist}-${info.album}`;
       const isNewTrack = trackId !== lastTrack;
 
-      // Only log when track changes
       if (isNewTrack) {
         console.log(`🎶 Now Playing: ${info.title}`);
         if (info.artist) console.log(`   Artist: ${info.artist}`);
         if (info.album) console.log(`   Album: ${info.album}`);
         console.log("");
         lastTrack = trackId;
-
-        // Track when this song started (since Telegram doesn't provide elapsedTime)
         currentTrackId = trackId;
         currentTrackStartTime = Date.now();
       }
 
-      // Fetch artwork (uses cache for repeated calls)
       const artworkUrl = await fetchArtworkUrl(info.title, info.artist);
 
-      // Build presence details
       let details = info.title || "Unknown Track";
-      // Discord requires details to be at least 2 characters long
       if (details.length < 2) {
         details = `${details} `;
       }
 
-      // Build state with artist and duration
       let state = info.artist || "Unknown Artist";
       if (info.duration) {
         const mins = Math.floor(info.duration / 60);
         const secs = Math.floor(info.duration % 60);
-        const durationStr = `${mins}:${secs.toString().padStart(2, "0")}`;
-        state = `${state} • ${durationStr}`;
+        state = `${state} • ${mins}:${secs.toString().padStart(2, "0")}`;
       }
 
-      // Calculate timestamps for progress bar
-      // elapsedTime is the elapsed time at the moment of timestamp, so we need to add time since then
       const now = Date.now();
       let actualElapsedMs: number | null = null;
 
       if (info.elapsedTime !== null && info.timestamp !== null) {
-        // timestamp is in ms (converted from NSDate.timeIntervalSince1970 * 1000 in JXA)
         const timeSinceUpdate = now - info.timestamp;
         actualElapsedMs = info.elapsedTime * 1000 + timeSinceUpdate;
       }
@@ -425,19 +644,23 @@ async function main() {
           ? startTimestamp + info.duration * 1000
           : undefined;
 
+      const displayName = info.artist
+        ? `${info.title} - ${info.artist}`
+        : info.title || "Telegram";
+
       await rpc.user?.setActivity({
+        name: displayName,
         type: ActivityType.Listening,
-        details: details.substring(0, 128), // Discord limit
+        details: details.substring(0, 128),
         state: state.substring(0, 128),
         startTimestamp: new Date(startTimestamp),
         endTimestamp: endTimestamp ? new Date(endTimestamp) : undefined,
-        largeImageKey: artworkUrl || "telegram", // Use album art if available, fallback to telegram icon
-        largeImageText: info.album || "Telegram",
-        smallImageKey: "telegram", // Telegram icon as small badge
-        smallImageText: "Playing via Telegram",
+        largeImageKey: artworkUrl || "telegram",
+        largeImageText: info.album || info.title || "Telegram",
+        smallImageKey: "telegram",
+        smallImageText: info.title || "Playing via Telegram",
       });
     } else {
-      // Clear presence if not playing from Telegram
       if (lastTrack !== null) {
         console.log("⏸️  Playback stopped or paused\n");
         lastTrack = null;
@@ -455,20 +678,19 @@ async function main() {
   setInterval(updatePresence, POLL_INTERVAL);
 
   // Handle graceful shutdown
-  process.on("SIGINT", async () => {
+  const shutdown = async () => {
     console.log("\n\n👋 Shutting down...");
     await rpc.user?.clearActivity();
     await rpc.destroy();
+    if (systray) {
+      systray.kill(false);
+    }
     process.exit(0);
-  });
+  };
 
-  process.on("SIGTERM", async () => {
-    await rpc.user?.clearActivity();
-    await rpc.destroy();
-    process.exit(0);
-  });
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 
-  // Keep the process running
   console.log("Press Ctrl+C to stop.\n");
 }
 
