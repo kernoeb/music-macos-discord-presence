@@ -12,12 +12,48 @@ const TRAY_MODE = process.argv.includes("--tray") || (typeof IS_COMPILED !== "un
 // Discord Application Client ID
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "YOUR_CLIENT_ID_HERE";
 
-// Telegram bundle identifiers (macOS)
+// Supported media source bundle identifiers (macOS)
 const TELEGRAM_BUNDLE_IDS = [
   "ru.keepcoder.Telegram",
   "org.telegram.desktop",
   "com.tdesktop.Telegram",
 ];
+
+// YouTube Music PWA extension ID (same across Chrome, Brave, Edge)
+const YOUTUBE_MUSIC_EXTENSION_ID = "cinhimbnkkaeohfgghhklpknlkffjgod";
+
+// Cache for YouTube Music PWA process detection
+let ytMusicProcessCache: { result: boolean; timestamp: number } | null = null;
+const YT_MUSIC_CACHE_TTL = 10000; // 10 seconds
+
+// Check if YouTube Music PWA process is running
+async function isYouTubeMusicProcessRunning(): Promise<boolean> {
+  const now = Date.now();
+  if (ytMusicProcessCache && now - ytMusicProcessCache.timestamp < YT_MUSIC_CACHE_TTL) {
+    return ytMusicProcessCache.result;
+  }
+
+  try {
+    const result = await $`pgrep -fl "YouTube Music.app/Contents/MacOS/app_mode_loader"`.quiet().text();
+    const isRunning = result.trim().length > 0;
+    ytMusicProcessCache = { result: isRunning, timestamp: now };
+    return isRunning;
+  } catch {
+    // pgrep returns exit code 1 when no match
+    ytMusicProcessCache = { result: false, timestamp: now };
+    return false;
+  }
+}
+
+// Match YouTube Music PWA installed via any Chromium browser
+function isYouTubeMusicPWA(bundleId: string): boolean {
+  // PWA bundle IDs follow pattern: com.browser.Browser.app.{extension_id}
+  // Examples:
+  //   com.google.Chrome.app.cinhimbnkkaeohfgghhklpknlkffjgod
+  //   com.brave.Browser.app.cinhimbnkkaeohfgghhklpknlkffjgod
+  //   com.microsoft.edgemac.app.cinhimbnkkaeohfgghhklpknlkffjgod
+  return bundleId.toLowerCase().endsWith(`.app.${YOUTUBE_MUSIC_EXTENSION_ID.toLowerCase()}`);
+}
 
 // Polling interval in milliseconds
 const POLL_INTERVAL = 5000;
@@ -213,11 +249,32 @@ async function getNowPlayingInfo(): Promise<NowPlayingInfo> {
   }
 }
 
-function isTelegramPlaying(info: NowPlayingInfo): boolean {
-  if (!info.bundleIdentifier) return false;
-  return TELEGRAM_BUNDLE_IDS.some(
-    (id) => info.bundleIdentifier?.toLowerCase() === id.toLowerCase()
-  );
+type MediaSource = "telegram" | "youtube-music" | null;
+
+async function getMediaSource(info: NowPlayingInfo): Promise<MediaSource> {
+  if (!info.bundleIdentifier) return null;
+
+  const bundleId = info.bundleIdentifier;
+
+  // Check Telegram
+  if (TELEGRAM_BUNDLE_IDS.some((id) => bundleId.toLowerCase() === id.toLowerCase())) {
+    return "telegram";
+  }
+
+  // Check YouTube Music PWA by bundle ID pattern
+  if (isYouTubeMusicPWA(bundleId)) {
+    return "youtube-music";
+  }
+
+  // Check for app_mode_loader (Chromium PWA loader) - need to verify it's YouTube Music
+  if (bundleId === "app_mode_loader") {
+    const isYTMusic = await isYouTubeMusicProcessRunning();
+    if (isYTMusic) {
+      return "youtube-music";
+    }
+  }
+
+  return null;
 }
 
 function normalizeSearchTerm(term: string): string {
@@ -378,8 +435,8 @@ async function fetchArtworkUrl(title: string, artist: string | null): Promise<st
 }
 
 async function testMode() {
-  console.log("🎵 Telegram Audio Discord Rich Presence - TEST MODE");
-  console.log("====================================================");
+  console.log("🎵 Music Discord Rich Presence - TEST MODE");
+  console.log("==========================================");
   console.log("Testing Now Playing detection (no Discord connection)\n");
 
   const runTest = async () => {
@@ -395,10 +452,13 @@ async function testMode() {
       console.log("📱 App: (none detected)");
     }
 
-    if (isTelegramPlaying(info)) {
+    const source = await getMediaSource(info);
+    if (source === "telegram") {
       console.log("✅ Telegram IS the current player");
+    } else if (source === "youtube-music") {
+      console.log("✅ YouTube Music IS the current player");
     } else {
-      console.log("❌ Telegram is NOT the current player");
+      console.log("❌ No supported media source detected");
       if (info.bundleIdentifier) {
         console.log(`   Current player: ${info.bundleIdentifier}`);
       }
@@ -449,8 +509,8 @@ async function main() {
   }
 
   const modeLabel = TRAY_MODE ? "(Tray App)" : "";
-  console.log(`🎵 Telegram Audio Discord Rich Presence ${modeLabel}`);
-  console.log("=".repeat(44 + modeLabel.length));
+  console.log(`🎵 Music Discord Rich Presence ${modeLabel}`);
+  console.log("=".repeat(36 + modeLabel.length));
 
   if (DISCORD_CLIENT_ID === "YOUR_CLIENT_ID_HERE") {
     console.error("\n⚠️  Please set your Discord Client ID!");
@@ -509,10 +569,10 @@ async function main() {
         icon: TRAY_ICON,
         isTemplateIcon: true,
         title: "",
-        tooltip: "Telegram Discord Presence",
+        tooltip: "Music Discord Presence",
         items: [
           {
-            title: "Telegram → Discord",
+            title: "Music → Discord",
             enabled: false,
             tooltip: "Status",
           },
@@ -549,7 +609,7 @@ async function main() {
           menu: {
             icon: TRAY_ICON,
             title: "",
-            tooltip: "Telegram Discord Presence (Paused)",
+            tooltip: "Music Discord Presence (Paused)",
             items: [],
           },
         });
@@ -567,7 +627,7 @@ async function main() {
           menu: {
             icon: TRAY_ICON,
             title: "",
-            tooltip: "Telegram Discord Presence",
+            tooltip: "Music Discord Presence",
             items: [],
           },
         });
@@ -591,20 +651,22 @@ async function main() {
     await connectToDiscord();
   }
 
-  console.log("🔍 Monitoring for Telegram audio playback...\n");
+  console.log("🔍 Monitoring for Telegram & YouTube Music playback...\n");
 
   // Main update loop
   async function updatePresence() {
     if (!isConnected || isPaused) return;
 
     const info = await getNowPlayingInfo();
+    const mediaSource = await getMediaSource(info);
 
-    if (isTelegramPlaying(info) && info.title && info.isPlaying && info.playbackRate && info.playbackRate > 0) {
+    if (mediaSource && info.title && info.isPlaying && info.playbackRate && info.playbackRate > 0) {
       const trackId = `${info.title}-${info.artist}-${info.album}`;
       const isNewTrack = trackId !== lastTrack;
 
       if (isNewTrack) {
-        console.log(`🎶 Now Playing: ${info.title}`);
+        const sourceLabel = mediaSource === "youtube-music" ? "YouTube Music" : "Telegram";
+        console.log(`🎶 Now Playing (${sourceLabel}): ${info.title}`);
         if (info.artist) console.log(`   Artist: ${info.artist}`);
         if (info.album) console.log(`   Album: ${info.album}`);
         console.log("");
@@ -646,7 +708,12 @@ async function main() {
 
       const displayName = info.artist
         ? `${info.title} - ${info.artist}`
-        : info.title || "Telegram";
+        : info.title || "Music";
+
+      // Choose appropriate icons/labels based on source
+      const smallImageKey = mediaSource === "youtube-music" ? "youtube-music" : "telegram";
+      const fallbackImage = mediaSource === "youtube-music" ? "youtube-music" : "telegram";
+      const sourceText = mediaSource === "youtube-music" ? "YouTube Music" : "Telegram";
 
       await rpc.user?.setActivity({
         name: displayName,
@@ -655,10 +722,10 @@ async function main() {
         state: state.substring(0, 128),
         startTimestamp: new Date(startTimestamp),
         endTimestamp: endTimestamp ? new Date(endTimestamp) : undefined,
-        largeImageKey: artworkUrl || "telegram",
-        largeImageText: info.album || info.title || "Telegram",
-        smallImageKey: "telegram",
-        smallImageText: info.title || "Playing via Telegram",
+        largeImageKey: artworkUrl || fallbackImage,
+        largeImageText: info.album || info.title || sourceText,
+        smallImageKey: smallImageKey,
+        smallImageText: info.title || `Playing via ${sourceText}`,
       });
     } else {
       if (lastTrack !== null) {

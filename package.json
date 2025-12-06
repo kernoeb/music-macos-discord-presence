@@ -1,6 +1,6 @@
 {
-  "name": "telegram-audio-discord",
-  "description": "Display Telegram music playback as Discord Rich Presence",
+  "name": "music-discord-presence",
+  "description": "Display music playback from Telegram and YouTube Music as Discord Rich Presence",
   "version": "1.0.0",
   "module": "index.ts",
   "type": "module",
@@ -10,7 +10,7 @@
     "dev": "bun --watch index.ts",
     "test": "bun run index.ts --test",
     "tray": "bun run index.ts --tray",
-    "build": "bun build --compile --minify --define IS_COMPILED=true index.ts --outfile telegram-discord-presence",
+    "build": "bun build --compile --minify --define IS_COMPILED=true index.ts --outfile music-discord-presence",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

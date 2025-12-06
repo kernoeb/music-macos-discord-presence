@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Telegram Audio Discord Rich Presence Launcher
+# Music Discord Rich Presence Launcher
 # Make sure to set your Discord Client ID below!
 
 if [ -z "$DISCORD_CLIENT_ID" ]; then
@@ -20,15 +20,15 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Check if the compiled binary exists
-if [ -f "$SCRIPT_DIR/telegram-discord-presence" ]; then
-    echo "Starting Telegram Discord Presence..."
-    DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" "$SCRIPT_DIR/telegram-discord-presence"
+if [ -f "$SCRIPT_DIR/music-discord-presence" ]; then
+    echo "Starting Music Discord Presence..."
+    DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" "$SCRIPT_DIR/music-discord-presence"
 else
     # Fall back to running with bun
     if command -v bun &> /dev/null; then
-        echo "Starting Telegram Discord Presence (via Bun)..."
+        echo "Starting Music Discord Presence (via Bun)..."
         cd "$SCRIPT_DIR"
-        DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" bun run tray.ts
+        DISCORD_CLIENT_ID="$DISCORD_CLIENT_ID" bun run index.ts --tray
     else
         echo "Error: Neither the compiled binary nor Bun was found."
         echo "Please either:"

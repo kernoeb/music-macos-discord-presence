@@ -1,6 +1,6 @@
-# Project: Telegram Music Discord Presence
+# Project: Music Discord Presence
 
-macOS app that shows Telegram audio playback as Discord Rich Presence.
+macOS app that shows Telegram and YouTube Music playback as Discord Rich Presence.
 
 ## Tech Stack
 
@@ -36,15 +36,20 @@ DISCORD_CLIENT_ID=xxx bun run tray
 ### JXA for Now Playing
 Uses `osascript -l JavaScript` to query MediaRemote framework. This bypasses macOS 15.4+ entitlement restrictions.
 
+### Media Source Detection
+Supports multiple media sources:
+- **Telegram**: Detected via bundle IDs (`ru.keepcoder.Telegram`, etc.)
+- **YouTube Music PWA**: Detected via Chromium PWA bundle ID pattern (`*.app.cinhimbnkkaeohfgghhklpknlkffjgod`)
+
 ## File Structure
 
-- `tray.ts` - Main app with system tray
-- `index.ts` - CLI version (supports --test flag)
+- `index.ts` - Main app (CLI + tray mode, supports --test flag)
 - `start.sh` - Launcher script
 
 ## Gotchas
 
 1. **systray2**: CommonJS module - use `require().default`, not ES import
 2. **Discord RPC**: Connect in background with retry - don't block tray startup
-3. **Artwork**: Fetched from iTunes Search API, cached in memory
+3. **Artwork**: Fetched from Deezer first, then iTunes Search API, cached in memory
 4. **Playback detection**: Check both `isPlaying` AND `playbackRate > 0`
+5. **YouTube Music PWA**: Bundle ID includes browser prefix + extension ID suffix
