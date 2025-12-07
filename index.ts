@@ -665,9 +665,8 @@ async function main() {
       const artworkUrl = await fetchArtworkUrl(info.title, info.artist);
 
       let details = info.title || "Unknown Track";
-      if (details.length < 2) {
-        details = `${details} `;
-      }
+      if (details.length < 2) details = `${details} `;
+      if (details.length > 127) details = details.substring(0, 127);
 
       let state = info.artist || "Unknown Artist";
       if (info.duration) {
@@ -693,9 +692,12 @@ async function main() {
           ? startTimestamp + info.duration * 1000
           : undefined;
 
-      const displayName = info.artist
+      let displayName = info.artist
         ? `${info.title} - ${info.artist}`
         : info.title || "Music";
+
+      if (displayName.length < 2) displayName = `${displayName} `;
+      if (displayName.length > 127) displayName = displayName.substring(0, 127);
 
       // Choose appropriate icons/labels based on source
       const smallImageKey = mediaSource === "youtube-music" ? "youtube-music" : "telegram";
@@ -703,7 +705,8 @@ async function main() {
       const sourceText = mediaSource === "youtube-music" ? "YouTube Music" : "Telegram";
 
       // Discord needs at least 2 characters for title
-      if (info.title?.length === 1) info.title = info.title + ' '
+      if (info.title?.length === 1) info.title = info.title + ' ';
+      if (info.title?.length > 127) info.title = info.title.substring(0, 127);
 
       await rpc.user?.setActivity({
         name: displayName,
