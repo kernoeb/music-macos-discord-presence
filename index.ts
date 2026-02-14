@@ -253,7 +253,16 @@ async function getMediaSource(info: NowPlayingInfo): Promise<MediaSource> {
     return "telegram";
   }
 
-  // Check for app_mode_loader (Chromium PWA loader) - verify it's YouTube Music via PID
+  // Check for YouTube Music PWA
+  // Bundle ID formats:
+  //   - "app_mode_loader" (older Chromium PWA loader) — verify via PID
+  //   - "com.brave.Browser.app.<extensionId>" / "com.google.Chrome.app.<extensionId>" — match extension ID directly
+  const YOUTUBE_MUSIC_EXTENSION_ID = "cinhimbnkkaeohfgghhklpknlkffjgod";
+
+  if (bundleId.endsWith(`.${YOUTUBE_MUSIC_EXTENSION_ID}`)) {
+    return "youtube-music";
+  }
+
   if (bundleId === "app_mode_loader" && info.processIdentifier) {
     if (await isYouTubeMusicPid(info.processIdentifier)) {
       return "youtube-music";
