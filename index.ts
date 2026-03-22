@@ -272,6 +272,16 @@ async function getMediaSource(info: NowPlayingInfo): Promise<MediaSource> {
   return null;
 }
 
+/**
+ * Detect if a Telegram "Now Playing" entry is a voice/video message
+ * rather than actual music. Voice messages have titles like
+ * "aujourd'hui à 20:12", "today at 8:12 PM", "hier à 15:30", etc.
+ */
+function isTelegramVoiceMessage(title: string): boolean {
+  // Voice message titles are short date/time references that end with a time pattern
+  return title.length <= 40 && /\d{1,2}:\d{2}(\s*(AM|PM))?$/i.test(title);
+}
+
 function normalizeSearchTerm(term: string): string {
   return term
     .normalize("NFD")
@@ -697,6 +707,18 @@ async function main() {
     const info = await getNowPlayingInfo();
     const mediaSource = await getMediaSource(info);
     const isPlaying = info.isPlaying && info.playbackRate && info.playbackRate > 0;
+
+    // Skip Telegram voice/video messages (titles are timestamps like "aujourd'hui à 20:12")
+    if (mediaSource === "telegram" && info.title && isTelegramVoiceMessage(info.title)) {
+      if (lastTrack !== null) {
+        console.log("⏸️  Playback stopped or paused\n");
+        lastTrack = null;
+        currentTrackId = null;
+        currentTrackStartTime = null;
+        await rpc.user?.clearActivity();
+      }
+      return;
+    }
 
     if (mediaSource && info.title && isPlaying) {
       const trackId = `${info.title}-${info.artist}-${info.album}`;
