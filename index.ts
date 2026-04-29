@@ -581,9 +581,26 @@ async function main() {
     isConnected = true;
   });
 
+  let isReconnecting = false;
+
+  const scheduleReconnect = (reason: string) => {
+    if (isReconnecting) return;
+    isConnected = false;
+    isReconnecting = true;
+    console.log(`🔁 Reconnecting to Discord in 10s (${reason})...`);
+    setTimeout(() => {
+      isReconnecting = false;
+      connectToDiscord();
+    }, 10000);
+  };
+
   rpc.on("disconnected", () => {
     console.log("❌ Disconnected from Discord");
-    isConnected = false;
+    scheduleReconnect("disconnected");
+  });
+
+  rpc.transport.on("close", () => {
+    if (isConnected) scheduleReconnect("transport closed");
   });
 
   // Systray instance (only used in tray mode)
@@ -603,6 +620,24 @@ async function main() {
         console.error("\nMake sure Discord is running on your computer.");
         process.exit(1);
       }
+    }
+  };
+
+  const safeSetActivity = async (activity: Parameters<NonNullable<typeof rpc.user>["setActivity"]>[0]) => {
+    try {
+      await rpc.user?.setActivity(activity);
+    } catch (error) {
+      console.error("⚠️  setActivity failed:", error instanceof Error ? error.message : error);
+      scheduleReconnect("setActivity error");
+    }
+  };
+
+  const safeClearActivity = async () => {
+    try {
+      await rpc.user?.clearActivity();
+    } catch (error) {
+      console.error("⚠️  clearActivity failed:", error instanceof Error ? error.message : error);
+      scheduleReconnect("clearActivity error");
     }
   };
 
@@ -715,7 +750,7 @@ async function main() {
         lastTrack = null;
         currentTrackId = null;
         currentTrackStartTime = null;
-        await rpc.user?.clearActivity();
+        await safeClearActivity();
       }
       return;
     }
@@ -791,7 +826,7 @@ async function main() {
         if (info.album.length > 127) info.album = info.album.substring(0, 127);
       }
 
-      await rpc.user?.setActivity({
+      await safeSetActivity({
         name: displayName,
         type: ActivityType.Listening,
         details: details.substring(0, 128),
@@ -809,7 +844,7 @@ async function main() {
         lastTrack = null;
         currentTrackId = null;
         currentTrackStartTime = null;
-        await rpc.user?.clearActivity();
+        await safeClearActivity();
       }
     }
   }
