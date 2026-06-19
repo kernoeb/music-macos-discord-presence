@@ -1,5 +1,17 @@
 # 🎵 Music Discord Rich Presence
 
+> [!IMPORTANT]
+> **This project has been superseded by [mac-now-playing](https://github.com/kernoeb/mac-now-playing).**
+>
+> It's been rewritten natively in Swift as **mac-now-playing**: a dependency-free
+> macOS app (no Bun/Node) that does everything this does — Discord Rich Presence for
+> music, with album art and source filtering — and adds a synced-lyrics karaoke
+> overlay. Active development continues there.
+>
+> 👉 **https://github.com/kernoeb/mac-now-playing**
+>
+> _The original README is kept below for anyone still running this version._
+
 Display what you're listening to on Telegram or YouTube Music as Discord Rich Presence with album artwork.
 
 ![macOS](https://img.shields.io/badge/macOS-15.4+-blue)
